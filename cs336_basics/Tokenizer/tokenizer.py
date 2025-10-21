@@ -34,88 +34,6 @@ class ComparablePair:
     def __eq__(self, other: 'ComparablePair') -> bool:
         return self.freq == other.freq and self.pair == other.pair
 
-def merge_pair(
-        start: int,
-        end: int,
-        pair: Tuple[bytes, bytes],
-        pre_tokens: List[Tuple[bytes]],
-        pre_tokens_cnt: Dict[Tuple[bytes, bytes], int],
-        pre_tokens_state: Dict[Tuple[bytes], List[bytes]],
-) -> Tuple[Dict[Tuple[bytes], List[bytes]], Dict[Tuple[bytes, bytes], int], Dict[Tuple[bytes, bytes], Tuple[bytes]]]:
-    '''
-    parallel calculate the change variable of one merege
-    '''
-    # initialize the bytes to be compared
-    first, second = pair
-    # initialize the results
-    new_states = dict()
-    change_cnt = Counter()
-    new_pair2pre_token = defaultdict(set)
-
-    # iterate each pre_token
-    for i in range(start, end):
-        pre_token = pre_tokens[i]
-        freq = pre_tokens_cnt[pre_token]
-        # Get the current state
-        raw_state = pre_tokens_state[pre_token]
-        new_state = []
-
-        # Change the state
-        j = 0
-        # log the change idx
-        raw_left_idxs = []
-        new_idxs = []
-        while j < len(raw_state): # at least two tokens are needed
-            # check the pair before reaching the end
-            if j < len(raw_state)-1 and raw_state[j] == first and raw_state[j+1] == second:
-                # log the change idx
-                raw_left_idxs.append(j)
-                new_idxs.append(len(new_state))
-                # merge
-                new_state.append(first + second)
-                j += 2
-            else:
-                # not merge
-                new_state.append(raw_state[j])
-                j += 1
-
-        # !!! As we don't remove the pre_token when it doesn't contain some pair after merging,
-        # !!! It is possible that the pre_token doesn't contain the pair!
-
-        # store the new state
-        if new_idxs:
-            new_states[pre_token] = new_state
-        
-        # count the changes // store the new pair mapper
-        if new_idxs:
-            # minus raw pair
-            for idx in raw_left_idxs:
-                # (A,[B],C,D)
-                # (B,C)
-                change_cnt[(raw_state[idx], raw_state[idx+1])] -= freq
-                # (A,B)
-                if idx >= 1:
-                    change_cnt[(raw_state[idx-1], raw_state[idx])] -= freq
-                # (C,D)
-                if idx <= len(raw_state) - 3:
-                    change_cnt[(raw_state[idx+1], raw_state[idx+2])] -= freq
-            # add new pair // store the new pair mapper
-            for idx in new_idxs:
-                # (A, [BC], D)
-                # (A, BC)
-                if idx >= 1:
-                    new_pair = (new_state[idx-1], new_state[idx])
-                    change_cnt[new_pair] += freq
-                    new_pair2pre_token[new_pair].add(pre_token)
-                # (BC, D)
-                if idx <= len(new_state) - 2:
-                    new_pair = (new_state[idx], new_state[idx+1])
-                    change_cnt[new_pair] += freq
-                    new_pair2pre_token[new_pair].add(pre_token)
-
-    return new_states, change_cnt, new_pair2pre_token
-
-
 def run_train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
@@ -183,43 +101,86 @@ def run_train_bpe(
         merge_list.append(pair)
         # Store the new vocab
         vocab[len(vocab)] = pair[0] + pair[1]
+        # log the pair that changed this loop and push them later
+        change_pair_set = set()
         
         # find the pre_tokens that contain the pair
-        related_pre_tokens = list(pair2pre_tokens[pair])
+        related_pre_tokens = pair2pre_tokens[pair]
 
-        # parallel the merge process
-        # initialize the chunk idxs
-        n = len(related_pre_tokens)
-        chunk_size = n // n_processes
-        chunk_idxs = [i * chunk_size for i in range(n_processes)]
-        chunk_idxs.append(n)
-        chunk_idxs = zip(chunk_idxs[:-1], chunk_idxs[1:])
+        # initialize the bytes to be compared
+        first, second = pair
 
-        # parallel merge
-        with mp.Pool(n_processes) as pool:
-            task = partial(
-                merge_pair,
-                pair = pair,
-                pre_tokens = related_pre_tokens,
-                pre_tokens_cnt = pre_tokens_cnt,
-                pre_tokens_state = pre_tokens_state,
-            )
+        # iterate each pre_token
+        # If we do multiprocessing here,
+        # then we will suffer the cost of initialization of pool and serialization hundred of times!
+        # Thus, we just do a for loop!
+        for pre_token in related_pre_tokens:
+            freq = pre_tokens_cnt[pre_token]
+            # Get the current state
+            raw_state = pre_tokens_state[pre_token]
+            if len(raw_state) < 2:
+                continue
+            new_state = []
 
-            partial_result = pool.starmap(task, chunk_idxs)
-        
-        # update the state and the pair counter
-        change_pair_set = set()
-        for state, cnt, mapper in partial_result:
-            # update the pair counter
-            for change_pair, change_val in cnt.items():
-                pairs_cnt[change_pair] += change_val
-                change_pair_set.add(change_pair)
-            # update the changed states
-            for token, s in state.items():
-                pre_tokens_state[token] = s
-            # update the mapper
-            for new_pair, tokens_set in mapper.items():
-                pair2pre_tokens[new_pair].update(tokens_set)
+            # Merge all the pairs
+            j = 0
+            # log the change idx
+            raw_left_idxs = []
+            new_idxs = []
+            while j < len(raw_state): # at least two tokens are needed
+                # check the pair before reaching the end
+                if j < len(raw_state)-1 and raw_state[j] == first and raw_state[j+1] == second:
+                    # log the change idx
+                    raw_left_idxs.append(j)
+                    new_idxs.append(len(new_state))
+                    # merge
+                    new_state.append(first + second)
+                    j += 2
+                else:
+                    # not merge
+                    new_state.append(raw_state[j])
+                    j += 1
+
+            # !!! As we don't remove the pre_token when it doesn't contain some pair after merging,
+            # !!! It is possible that the pre_token doesn't contain the pair!
+
+            # store the new state
+            if new_idxs:
+                pre_tokens_state[pre_token] = new_state
+            
+                # count the changes // store the new pair mapper
+                # minus raw pair
+                for idx in raw_left_idxs:
+                    # (A,[B],C,D)
+                    # (B,C) which could be omitted as we pop this pair at last
+                    # new_pair = (raw_state[idx], raw_state[idx+1])
+                    # pairs_cnt[new_pair] -= freq
+                    # change_pair_set.add(new_pair)
+                    # (A,B)
+                    if idx >= 1:
+                        new_pair = (raw_state[idx-1], raw_state[idx])
+                        pairs_cnt[new_pair] -= freq
+                        change_pair_set.add(new_pair)
+                    # (C,D)
+                    if idx <= len(raw_state) - 3:
+                        new_pair = (raw_state[idx+1], raw_state[idx+2])
+                        pairs_cnt[new_pair] -= freq
+                        change_pair_set.add(new_pair)
+                # add new pair // store the new pair mapper
+                for idx in new_idxs:
+                    # (A, [BC], D)
+                    # (A, BC)
+                    if idx >= 1:
+                        new_pair = (new_state[idx-1], new_state[idx])
+                        pairs_cnt[new_pair] += freq
+                        pair2pre_tokens[new_pair].add(pre_token)
+                        change_pair_set.add(new_pair)
+                    # (BC, D)
+                    if idx <= len(new_state) - 2:
+                        new_pair = (new_state[idx], new_state[idx+1])
+                        pairs_cnt[new_pair] += freq
+                        pair2pre_tokens[new_pair].add(pre_token)
+                        change_pair_set.add(new_pair)
 
         # push changed pair count
         for change_pair in change_pair_set:
