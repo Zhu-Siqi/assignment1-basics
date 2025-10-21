@@ -73,7 +73,9 @@ def text2pre_tokens(
     '''
     for matching in pattern.finditer(chunk_text):
         pre_token = matching.group(0)
-        yield pre_token
+        # Only consider the pre_tokens whose length are larger than 1
+        if len(pre_token) >= 2:
+            yield pre_token
 
 def chunk_pre_tokenization(
         start: int,
@@ -108,9 +110,9 @@ def chunk_pre_tokenization(
 
 def file_pre_tokenization(
         file_path: str,
-        n_processes: int,
         special_tokens: str,
         extract_pattern: str = PAT,
+        n_processes: int = 8,
 ) -> Dict[Tuple[bytes], int]:
     '''
     Given a file path, the number of processes, 
@@ -235,7 +237,6 @@ if __name__ == '__main__':
     # check the pre_tokenization function
     pre_tokens_cnt = file_pre_tokenization(
         'data/TinyStoriesV2-GPT4-valid.txt',
-        5,
         ['<|endoftext|>'],
     )
     print(list(pre_tokens_cnt.items())[:5])

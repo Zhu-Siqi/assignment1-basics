@@ -21,7 +21,7 @@ def test_train_bpe_speed():
         special_tokens=["<|endoftext|>"],
     )
     end_time = time.time()
-    assert end_time - start_time < 1.5
+    assert end_time - start_time < 1.5, print(f'actual time: f{end_time - start_time}')
 
 
 def test_train_bpe():
@@ -47,7 +47,7 @@ def test_train_bpe():
             )
             for merge_token_1, merge_token_2 in gpt2_reference_merges
         ]
-    assert merges == reference_merges
+    assert merges == reference_merges, print('reference', reference_merges[:20], 'trained', merges[:20])
 
     # Compare the vocab to the expected output vocab
     with open(reference_vocab_path, encoding="utf-8") as f:
@@ -58,8 +58,8 @@ def test_train_bpe():
         }
     # Rather than checking that the vocabs exactly match (since they could
     # have been constructed differently, we'll make sure that the vocab keys and values match)
-    assert set(vocab.keys()) == set(reference_vocab.keys())
-    assert set(vocab.values()) == set(reference_vocab.values())
+    assert set(vocab.keys()) == set(reference_vocab.keys()), print('reference', list(set(reference_vocab.keys()))[:10], 'trained', list(set(vocab.keys()))[:10])
+    assert set(vocab.values()) == set(reference_vocab.values()), print('reference', list(set(reference_vocab.values()))[:10], 'trained', list(set(vocab.values()))[:10])
 
 
 def test_train_bpe_special_tokens(snapshot):
