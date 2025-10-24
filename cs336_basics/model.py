@@ -2,6 +2,7 @@ import torch
 from torch import tensor
 import torch.nn as nn
 from einops import einsum, rearrange
+from jaxtyping import Float
 import math
 
 class CustomLinear(nn.Module):
@@ -73,3 +74,37 @@ class CustomEmbedding(nn.Module):
                 x: torch.Tensor
             ) -> torch.Tensor:
         return self.weight[x]
+    
+
+class CustomRMSNorm(nn.Module):
+    def __init__(
+            self,
+            d_in: int,
+            epsilon : float = 1e-5,
+            device: torch.device | None = None,
+            dtype: torch.dtype | None = None,              
+    ):
+        super(CustomRMSNorm, self).__init__()
+        self.d_in = d_in
+        self.weight = nn.Parameter(
+            torch.empty(
+                d_in,
+                device=device, dtype=dtype
+            )
+        )
+        self.epsilon = epsilon
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.constant_(self.weight, 1)
+
+    def forward(
+            self,
+            x: float
+    ) -> Float[torch.Tensor, '... d_in']:
+        in_dtype = x.dtype
+        x = x.to(torch.float32)
+        x_rms = torch.sqrt((x ** 2).mean(-1).unsqueeze(-1) + self.epsilon)
+        x = x / x_rms
+        x = einsum(x.to(in_dtype), self.weight, '... d_in, d_in -> ... d_in')
+        return x
