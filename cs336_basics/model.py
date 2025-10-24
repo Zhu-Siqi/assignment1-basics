@@ -108,3 +108,29 @@ class CustomRMSNorm(nn.Module):
         x = x / x_rms
         x = einsum(x.to(in_dtype), self.weight, '... d_in, d_in -> ... d_in')
         return x
+    
+class CustomSwiGLU(nn.Module):
+    def __init__(
+      self,
+      d_model: int,
+      d_ff: int,
+      device: torch.device | None = None,
+      dtype: torch.dtype | None = None,      
+    ):
+        super(CustomSwiGLU, self).__init__()
+        self.d_model = d_model
+        self.d_ff = d_ff
+        self.linear1 = CustomLinear(d_model, d_ff,
+                                    device=device, dtype=dtype)
+        self.linear2 = CustomLinear(d_ff, d_model,
+                                    device=device, dtype=dtype)
+        self.linear3 = CustomLinear(d_model, d_ff,
+                                    device=device, dtype=dtype)
+        
+    def forward(
+            self,
+            x: torch.Tensor,
+    ) -> torch.Tensor:
+        weight = self.linear1(x)
+        weight = weight * torch.sigmoid(weight)
+        return self.linear2(weight * self.linear3(x))
