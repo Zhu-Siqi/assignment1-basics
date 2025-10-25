@@ -208,7 +208,7 @@ def run_multihead_self_attention_with_rope(
     """
     MHA_layer = model.CustomMultiheadSelfAttention(
         d_model, num_heads, use_rope=True,
-        theta=theta, max_seq_len=max_seq_len, token_positions=token_positions
+        theta=theta, max_seq_len=max_seq_len
     )
     MHA_layer.load_state_dict(
         {
@@ -219,7 +219,7 @@ def run_multihead_self_attention_with_rope(
         },
         strict=False
     )
-    return MHA_layer(in_features)
+    return MHA_layer(in_features, token_positions)
 
 
 def run_rope(
@@ -315,7 +315,25 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    block = model.CustomTransformerBlock(
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        theta=theta,
+        max_seq_len=max_seq_len
+    )
+    block.MHA_layer.q_proj.weight.data.copy_(weights['attn.q_proj.weight'])
+    block.MHA_layer.k_proj.weight.data.copy_(weights['attn.k_proj.weight'])
+    block.MHA_layer.v_proj.weight.data.copy_(weights['attn.v_proj.weight'])
+    block.MHA_layer.o_proj.weight.data.copy_(weights['attn.output_proj.weight'])
+    block.norm1.weight.data.copy_(weights['ln1.weight'])
+    block.norm2.weight.data.copy_(weights['ln2.weight'])
+    block.FFN.linear1.weight.data.copy_(weights['ffn.w1.weight'])
+    block.FFN.linear2.weight.data.copy_(weights['ffn.w2.weight'])
+    block.FFN.linear3.weight.data.copy_(weights['ffn.w3.weight'])
+
+    block.eval()
+    return block(in_features)
 
 
 def run_transformer_lm(
@@ -394,11 +412,34 @@ def run_transformer_lm(
             `sequence_length` is at most `context_length`.
 
     Returns:
-        Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
+        Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted !!!unnormalized!!!
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    LM = model.CustomTransformerLM(
+        vocab_size=vocab_size,
+        context_length=context_length,
+        num_layers=num_layers,
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        theta=rope_theta
+    )
+    LM.embedding.weight.data.copy_(weights['token_embeddings.weight'])
+    LM.last_norm.weight.data.copy_(weights['ln_final.weight'])
+    LM.last_linear.weight.data.copy_(weights['lm_head.weight'])
+    for i in range(num_layers):
+        LM.blocks[i].MHA_layer.q_proj.weight.data.copy_(weights[f'layers.{i}.attn.q_proj.weight'])
+        LM.blocks[i].MHA_layer.k_proj.weight.data.copy_(weights[f'layers.{i}.attn.k_proj.weight'])
+        LM.blocks[i].MHA_layer.v_proj.weight.data.copy_(weights[f'layers.{i}.attn.v_proj.weight'])
+        LM.blocks[i].MHA_layer.o_proj.weight.data.copy_(weights[f'layers.{i}.attn.output_proj.weight'])
 
+        LM.blocks[i].FFN.linear1.weight.data.copy_(weights[f'layers.{i}.ffn.w1.weight'])
+        LM.blocks[i].FFN.linear2.weight.data.copy_(weights[f'layers.{i}.ffn.w2.weight'])
+        LM.blocks[i].FFN.linear3.weight.data.copy_(weights[f'layers.{i}.ffn.w3.weight'])
+        
+        LM.blocks[i].norm1.weight.data.copy_(weights[f'layers.{i}.ln1.weight'])
+        LM.blocks[i].norm2.weight.data.copy_(weights[f'layers.{i}.ln2.weight'])
+    return LM(in_indices)
 
 def run_rmsnorm(
     d_model: int,

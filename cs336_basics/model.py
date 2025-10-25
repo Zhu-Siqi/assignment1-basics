@@ -219,7 +219,6 @@ class CustomMultiheadSelfAttention(nn.Module):
             use_rope: Bool = False,
             theta: Float | None = None,
             max_seq_len: int | None = None,
-            token_positions: Int[torch.Tensor, " ... sequence_length"] | None = None,
     ):
         super(CustomMultiheadSelfAttention, self).__init__()
         self.d_model = d_model
@@ -231,8 +230,7 @@ class CustomMultiheadSelfAttention(nn.Module):
         self.v_proj = CustomLinear(d_model, d_model)
         self.o_proj = CustomLinear(d_model, d_model)
 
-        self.use_rope = use_rope
-        self.token_positions = token_positions
+        self.use_rope = use_rope if theta and max_seq_len else False
         if use_rope:
             self.rope_layer = CustomRoPE(
                 theta=theta, d_k=self.d_k, 
@@ -252,6 +250,7 @@ class CustomMultiheadSelfAttention(nn.Module):
     def forward(
             self,
             x: torch.Tensor,
+            token_positions: Int[torch.Tensor, " ... sequence_length"] | None = None,
     ) -> torch.Tensor:
         q = self.q_proj(x)
         q = rearrange(q, '... seq_len (head d_k) -> ... head seq_len d_k', 
@@ -264,8 +263,8 @@ class CustomMultiheadSelfAttention(nn.Module):
                       head = self.num_heads, d_k = self.d_k)
         
         if self.use_rope:
-            q = self.rope_layer(q, self.token_positions)
-            k = self.rope_layer(k, self.token_positions)
+            q = self.rope_layer(q, token_positions)
+            k = self.rope_layer(k, token_positions)
         
         mask = self._generate_mask(
             q.shape[-2], q.device
@@ -277,3 +276,70 @@ class CustomMultiheadSelfAttention(nn.Module):
         attention_out = rearrange(attention_out, '... head seq_len d_k -> ... seq_len (head d_k)')
         attention_out = self.o_proj(attention_out)
         return attention_out
+    
+
+class CustomTransformerBlock(nn.Module):
+    def __init__(
+            self,
+            d_model: int,
+            num_heads: int,
+            d_ff: int,
+            theta: float,
+            max_seq_len: int,
+    ):
+        super(CustomTransformerBlock, self).__init__()
+        self.norm1 = CustomRMSNorm(d_model)
+        self.MHA_layer = CustomMultiheadSelfAttention(
+            d_model, num_heads, 
+            use_rope=True, theta=theta, max_seq_len=max_seq_len
+        )
+        self.norm2 = CustomRMSNorm(d_model)
+        self.FFN = CustomSwiGLU(d_model, d_ff)
+
+    def forward(
+            self,
+            x: torch.Tensor,
+            token_positions: Int[torch.Tensor, " ... sequence_length"] | None = None,
+    ) -> torch.Tensor:
+        x = x + self.MHA_layer(self.norm1(x), token_positions)
+        x = x + self.FFN(self.norm2(x))
+        return x
+    
+
+class CustomTransformerLM(nn.Module):
+    def __init__(
+            self,
+            vocab_size:int,
+            context_length:int,
+            num_layers:int,
+            d_model: int,
+            num_heads: int,
+            d_ff: int,
+            theta: float,
+    ):
+        super(CustomTransformerLM, self).__init__()
+        self.embedding = CustomEmbedding(
+            vocab_size, d_model
+        )
+        self.blocks = nn.ModuleList(
+            [
+                CustomTransformerBlock(
+                    d_model, num_heads, d_ff, theta, context_length
+                ) for _ in range(num_layers)
+            ]
+        )
+        self.last_norm = CustomRMSNorm(d_model)
+        self.last_linear = CustomLinear(d_model, vocab_size)
+        # self.last_sftm = CustomSoftmax()
+
+    def forward(
+            self,
+            idxs: Int[torch.Tensor, ' batch_size seq_len'],
+            token_positions: Int[torch.Tensor, " ... sequence_length"] | None = None,
+    ) -> Float[torch.Tensor, ' batch_size seq_len vocab_size']:
+        x = self.embedding(idxs)
+        for block in self.blocks:
+            x = block(x, token_positions)
+        # x = self.last_sftm(self.last_linear(self.last_norm(x)), dim = -1)
+        x = self.last_linear(self.last_norm(x))
+        return x
