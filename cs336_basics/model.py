@@ -2,7 +2,7 @@ import torch
 from torch import tensor
 import torch.nn as nn
 from einops import einsum, rearrange
-from jaxtyping import Float
+from jaxtyping import Float, Bool, Int
 import math
 
 class CustomLinear(nn.Module):
@@ -162,11 +162,118 @@ class CustomRoPE(nn.Module):
     def forward(
             self, 
             x: torch.Tensor, 
-            token_positions: torch.Tensor
+            token_positions: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        if token_positions is None:
+            token_positions = torch.arange(0, x.shape[-2], device=x.device)
+            if x.dim() == 3:
+                token_positions = token_positions.unsqueeze(0)
+            elif x.dim() == 4:
+                token_positions = token_positions.unsqueeze(0).unsqueeze(0)
         seq_angles = einsum(token_positions, self.angles, '... k, d -> ... k d')
 
         ang_cos = seq_angles.cos().repeat_interleave(2, dim = -1)
         ang_sin = seq_angles.sin().repeat_interleave(2, dim = -1)
 
         return x * ang_cos + self._rearrange_x(x) * ang_sin
+
+class CustomSoftmax(nn.Module):
+    def __init__(self):
+        super(CustomSoftmax, self).__init__()
+        pass
+    
+    def forward(
+            self,
+            x: torch.Tensor,
+            dim: int,
+    ) -> torch.Tensor:
+        # shift
+        x = x - x.max(dim=dim, keepdim=True)[0] # max() returns max values and idxs
+        x = torch.exp(x)
+        x = x / x.sum(dim=dim, keepdim=True)
+        return x
+    
+class CustomScaledDotProductAttention(nn.Module):
+    def __init__(self):
+        super(CustomScaledDotProductAttention, self).__init__()
+        self.softmax = CustomSoftmax()
+
+    def forward(
+            self,
+            query: Float[torch.Tensor, '... query d_k'],
+            key: Float[torch.Tensor, '... key d_k'],
+            value: Float[torch.Tensor, '... key d_v'],
+            mask: Bool[torch.Tensor, '... query key']
+    ) -> Float[torch.Tensor, '... query d_v']:
+        d_k = query.shape[-1]
+        attention = einsum(query, key, '... query d_k, ... key d_k -> ... query key') / math.sqrt(d_k)
+        attention = attention.masked_fill(~mask, -torch.inf)
+        attention = self.softmax(attention, -1)
+        return einsum(attention, value, '... query key, ... key d_v -> ... query d_v')
+
+class CustomMultiheadSelfAttention(nn.Module):
+    def __init__(
+            self,
+            d_model: int,
+            num_heads: int,
+            use_rope: Bool = False,
+            theta: Float | None = None,
+            max_seq_len: int | None = None,
+            token_positions: Int[torch.Tensor, " ... sequence_length"] | None = None,
+    ):
+        super(CustomMultiheadSelfAttention, self).__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+
+        self.q_proj = CustomLinear(d_model, d_model)
+        self.k_proj = CustomLinear(d_model, d_model)
+        self.v_proj = CustomLinear(d_model, d_model)
+        self.o_proj = CustomLinear(d_model, d_model)
+
+        self.use_rope = use_rope
+        self.token_positions = token_positions
+        if use_rope:
+            self.rope_layer = CustomRoPE(
+                theta=theta, d_k=self.d_k, 
+                max_seq_len=max_seq_len
+            )
+        
+        self.attention_layer = CustomScaledDotProductAttention()
+
+    def _generate_mask(
+            self,
+            seq_len: int,
+            device: torch.device,
+    ):
+        mask = torch.tril(torch.ones((seq_len, seq_len), device=device)).bool()
+        return mask.unsqueeze(0).unsqueeze(0)
+
+    def forward(
+            self,
+            x: torch.Tensor,
+    ) -> torch.Tensor:
+        q = self.q_proj(x)
+        q = rearrange(q, '... seq_len (head d_k) -> ... head seq_len d_k', 
+                      head = self.num_heads, d_k = self.d_k)
+        k = self.k_proj(x)
+        k = rearrange(k, '... seq_len (head d_k) -> ... head seq_len d_k', 
+                      head = self.num_heads, d_k = self.d_k)
+        v = self.v_proj(x)
+        v = rearrange(v, '... seq_len (head d_k) -> ... head seq_len d_k', 
+                      head = self.num_heads, d_k = self.d_k)
+        
+        if self.use_rope:
+            q = self.rope_layer(q, self.token_positions)
+            k = self.rope_layer(k, self.token_positions)
+        
+        mask = self._generate_mask(
+            q.shape[-2], q.device
+        )
+
+        attention_out = self.attention_layer(
+            q,k,v,mask
+        )
+        attention_out = rearrange(attention_out, '... head seq_len d_k -> ... seq_len (head d_k)')
+        attention_out = self.o_proj(attention_out)
+        return attention_out

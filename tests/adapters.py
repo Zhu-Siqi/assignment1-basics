@@ -120,7 +120,8 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    att_layer = model.CustomScaledDotProductAttention()
+    return att_layer(Q, K, V, mask)
 
 
 def run_multihead_self_attention(
@@ -154,7 +155,18 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    MHA_layer = model.CustomMultiheadSelfAttention(
+        d_model, num_heads
+    )
+    MHA_layer.load_state_dict(
+        {
+            'q_proj.weight': q_proj_weight,
+            'k_proj.weight': k_proj_weight,
+            'v_proj.weight': v_proj_weight,
+            'o_proj.weight': o_proj_weight,
+        }
+    )
+    return MHA_layer(in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -194,7 +206,20 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    MHA_layer = model.CustomMultiheadSelfAttention(
+        d_model, num_heads, use_rope=True,
+        theta=theta, max_seq_len=max_seq_len, token_positions=token_positions
+    )
+    MHA_layer.load_state_dict(
+        {
+            'q_proj.weight': q_proj_weight,
+            'k_proj.weight': k_proj_weight,
+            'v_proj.weight': v_proj_weight,
+            'o_proj.weight': o_proj_weight,
+        },
+        strict=False
+    )
+    return MHA_layer(in_features)
 
 
 def run_rope(
@@ -450,7 +475,8 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    softmax_layer = model.CustomSoftmax()
+    return softmax_layer(in_features, dim)
 
 
 def run_cross_entropy(
