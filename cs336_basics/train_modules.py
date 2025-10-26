@@ -1,8 +1,11 @@
 import torch
 from torch import nn
 from jaxtyping import Int, Float
-from typing import Iterable, Tuple, Callable
+from typing import Iterable, Tuple, Callable, IO, BinaryIO
+import os
 import math
+import numpy as np
+import numpy.typing as npt
 
 class CustomCrossEntropyLoss(nn.Module):
     def __init__(self):
@@ -93,3 +96,74 @@ class CustomAdamW(torch.optim.Optimizer):
                 
         
         return loss
+    
+def get_lr(
+        t,
+        lr_max: Float,
+        lr_min: Float,
+        T_w: int,
+        T_c: int,
+):
+    if t < T_w:
+        return t * lr_max / T_w
+    elif T_w <= t <= T_c:
+        return lr_min + (lr_max - lr_min) / 2 * (1 + math.cos((t - T_w) / (T_c - T_w) * math.pi))
+    elif t > T_c:
+        return lr_min
+    else:
+        raise ValueError(f'Invalid t: {t}')
+
+def gradient_clipping(
+        params: Iterable[nn.Parameter],
+        max_norm: Float,
+        epsilon: Float = 1e-6,
+):
+    norm_sum = 0
+    valid_gs = [p.grad for p in params if p.grad is not None]
+    for g in valid_gs:
+        norm_sum += (g.data ** 2).sum()
+    norm_sum = torch.sqrt(norm_sum)
+
+    if norm_sum > max_norm:
+        discount = max_norm / (norm_sum + epsilon)
+        for g in valid_gs:
+            g.data *= discount
+
+def get_batch(
+        dataset: npt.NDArray, 
+        batch_size: int, 
+        context_length: int, 
+        device: str,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    data_len = len(dataset)
+    max_start = data_len - context_length
+    start_idxs = np.random.randint(0, max_start, size = batch_size) # [0, data_len - context_length)
+    input_seqs = torch.from_numpy(np.stack([dataset[idx: idx+context_length] for idx in start_idxs])).long().to(device)
+    target_seqs = torch.from_numpy(np.stack([dataset[idx+1: idx+1+context_length] for idx in start_idxs])).long().to(device)
+    return input_seqs, target_seqs
+
+def save_checkpoint(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    iteration: int,
+    out: str | os.PathLike | BinaryIO | IO[bytes],
+):
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "iteration": iteration,
+        },
+        out,
+    )
+
+def load_checkpoint(
+    src: str | os.PathLike | BinaryIO | IO[bytes],
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+) -> int:
+    check_point = torch.load(src)
+    model.load_state_dict(check_point['model_state_dict'])
+    optimizer.load_state_dict(check_point['optimizer_state_dict'])
+    iteration = check_point['iteration']
+    return iteration

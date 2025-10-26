@@ -135,6 +135,7 @@ class CustomSwiGLU(nn.Module):
         weight = weight * torch.sigmoid(weight)
         return self.linear2(weight * self.linear3(x))
     
+    
 class CustomRoPE(nn.Module):
     def __init__(
             self,
