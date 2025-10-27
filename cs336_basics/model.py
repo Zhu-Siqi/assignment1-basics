@@ -335,9 +335,9 @@ class CustomTransformerLM(nn.Module):
 
     def forward(
             self,
-            idxs: Int[torch.Tensor, ' batch_size seq_len'],
-            token_positions: Int[torch.Tensor, " ... sequence_length"] | None = None,
-    ) -> Float[torch.Tensor, ' batch_size seq_len vocab_size']:
+            idxs: Int[torch.Tensor, ' ... seq_len'],
+            token_positions: Int[torch.Tensor, ' ... sequence_length'] | None = None,
+    ) -> Float[torch.Tensor, ' ... seq_len vocab_size']:
         x = self.embedding(idxs)
         for block in self.blocks:
             x = block(x, token_positions)
